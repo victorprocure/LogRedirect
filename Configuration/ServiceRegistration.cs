@@ -13,10 +13,7 @@ namespace LogRedirect.Configuration
         {
             services.AddSingleton<Options>(sd =>
             {
-                var parser = new Parser(x =>
-                {
-                    x.EnableDashDash = true;
-                });
+                var parser = new Parser(x => x.EnableDashDash = true);
 
                 Options? options = default;
                 parser.ParseArguments<Options>(args).WithParsed(o => options = o);
