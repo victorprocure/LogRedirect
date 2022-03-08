@@ -1,105 +1,82 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using LogRedirect.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Serilog;
+using Serilog.Events;
 
 namespace LogRedirect
 {
-    public static class Program
+    internal sealed class Program
     {
-        public static void Main(string[]? args)
+        private readonly SemaphoreSlim writeWaiter = new SemaphoreSlim(1, 1);
+        private readonly ILogger<Program> logger;
+        private readonly Options options;
+
+        public Program(Options options, ILogger<Program> logger)
         {
-            if (args is null || !args.Any() || args.Any(a => a.Equals("--help", StringComparison.OrdinalIgnoreCase) || a.Equals("-h", StringComparison.OrdinalIgnoreCase)))
-            {
-                PrintHelp();
-                return;
-            }
+            this.options = options;
+            this.logger = logger;
+        }
+
+        private static async Task Main(string[]? args)
+        {
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+                .Enrich.FromLogContext()
+                .WriteTo.Console()
+                .CreateBootstrapLogger();
 
             try
             {
-                var parsedCommand = ParseArgs(args);
-                Console.WriteLine("Attempting to start: {0}", parsedCommand.FileName);
-                if (!string.IsNullOrEmpty(parsedCommand.Arguments))
-                {
-                    Console.WriteLine("With arguments: {0}", parsedCommand.Arguments);
-                }
+                Log.Information("Starting Log Redirect");
+                await CreateHostBuilder(args).RunConsoleAsync();
 
-                ExecuteCommand(parsedCommand);
             }
             catch (Exception ex)
             {
-                Console.WriteLine("An error: {0} occurred: \"{1}\"", ex.GetType().Name, ex.Message);
-                PrintHelp();
+                Log.Fatal(ex, "Log redirect terminated");
+            }
+            finally
+            {
+                Log.CloseAndFlush();
             }
         }
 
-        private static void ExecuteCommand(ProcessStartInfo processStartInfo)
+        private static IHostBuilder CreateHostBuilder(string[]? args)
         {
-            using var process = new Process
-            {
-                StartInfo = processStartInfo
-            };
-
-            process.OutputDataReceived += (_, pArgs) =>
-            {
-                if (string.IsNullOrEmpty(pArgs.Data))
+            return Host.CreateDefaultBuilder(args)
+                .ConfigureServices(s => s.AddLogRedirect(args))
+                .UseSerilog((context, services, configuration) =>
                 {
-                    return;
-                }
+                    var options = services.GetRequiredService<Options>();
+                    if (options.Verbose)
+                    {
+                        configuration = configuration.MinimumLevel.Debug();
+                    }
+                    else
+                    {
+                        configuration = configuration.MinimumLevel.Information();
+                    }
 
-                if (pArgs.Data.Trim().Length <= 2)
-                {
-                    return;
-                }
-
-                Console.WriteLine(pArgs.Data);
-            };
-            process.Start();
-            process.BeginOutputReadLine();
-            process.WaitForExit();
-        }
-
-        private static void PrintHelp()
-        {
-            Console.WriteLine("Log Redirect");
-            Console.WriteLine(string.Empty);
-            Console.WriteLine("Usage:");
-            Console.WriteLine("  logredirect [options]");
-            Console.WriteLine(string.Empty);
-            Console.WriteLine("  logredirect --help");
-            Console.WriteLine("    This menu");
-            Console.WriteLine("  logredirect [executable] [options?]");
-            Console.WriteLine("    Run executable with options for that executable and redirect output");
-        }
-
-        private static ProcessStartInfo ParseArgs(IEnumerable<string> args)
-        {
-            var queuedArgs = new Queue<string>(args);
-            var executable = queuedArgs.Dequeue();
-            if (!File.Exists(executable))
-            {
-                throw new InvalidOperationException($"Executable not found: {executable}");
-            }
-
-            var processStartInfo = new ProcessStartInfo
-            {
-                FileName = executable,
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                WorkingDirectory = Path.GetDirectoryName(executable),
-                WindowStyle = ProcessWindowStyle.Hidden
-            };
-
-            if (args.Count() == 1)
-            {
-                return processStartInfo;
-            }
-
-            var arguments = string.Join(' ', queuedArgs);
-            processStartInfo.Arguments = arguments;
-            return processStartInfo;
+                    configuration = configuration
+                        .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
+                        .Enrich.FromLogContext()
+                        .WriteTo.Console()
+                        .WriteTo.File(
+                            options.OutputFile,
+                            fileSizeLimitBytes: 5 * 1024 * 1024,
+                            retainedFileCountLimit: 2,
+                            rollOnFileSizeLimit: true,
+                            shared: true,
+                            flushToDiskInterval: TimeSpan.FromSeconds(1));
+                });
         }
     }
 }
