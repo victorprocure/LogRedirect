@@ -15,16 +15,6 @@ namespace LogRedirect
 {
     internal sealed class Program
     {
-        private readonly SemaphoreSlim writeWaiter = new SemaphoreSlim(1, 1);
-        private readonly ILogger<Program> logger;
-        private readonly Options options;
-
-        public Program(Options options, ILogger<Program> logger)
-        {
-            this.options = options;
-            this.logger = logger;
-        }
-
         private static async Task Main(string[]? args)
         {
             Log.Logger = new LoggerConfiguration()
@@ -56,14 +46,7 @@ namespace LogRedirect
                 .UseSerilog((context, services, configuration) =>
                 {
                     var options = services.GetRequiredService<Options>();
-                    if (options.Verbose)
-                    {
-                        configuration = configuration.MinimumLevel.Debug();
-                    }
-                    else
-                    {
-                        configuration = configuration.MinimumLevel.Information();
-                    }
+                    configuration = options.Verbose ? configuration.MinimumLevel.Debug() : configuration.MinimumLevel.Information();
 
                     configuration = configuration
                         .MinimumLevel.Override("Microsoft", LogEventLevel.Information)
